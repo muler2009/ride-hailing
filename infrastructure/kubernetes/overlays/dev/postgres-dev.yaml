@@ -1,0 +1,88 @@
+# Dev-cluster convenience ONLY — not a StatefulSet, no replication, no
+# backups, a hardcoded low-stakes password. Staging and production use a
+# real managed Postgres (see those overlays' ConfigMap patches for
+# DATABASE_HOST) precisely so nothing resembling this ever runs for real
+# data — see infrastructure/kubernetes/README.md for why self-hosting the
+# database in-cluster is deliberately out of scope beyond this dev
+# convenience.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-dev-secret
+  namespace: ride-hailing
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: dev-only-not-a-real-secret
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-dev-data
+  namespace: ride-hailing
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: ride-hailing
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # a single PVC can't be attached to two pods at once
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: ride_hailing
+            - name: POSTGRES_USER
+              value: ride_hailing
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-dev-secret
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata # avoids postgres's "directory not empty" complaint about lost+found on some CSI drivers
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "ride_hailing"]
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-dev-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: ride-hailing
+spec:
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

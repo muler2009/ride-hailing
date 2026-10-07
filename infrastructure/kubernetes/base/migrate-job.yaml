@@ -1,0 +1,61 @@
+# Runs `manage.py migrate` exactly once per deploy, before the rollout of
+# api/websocket/worker/beat begins — never on container startup of those
+# Deployments themselves (see backend/docker-entrypoint.sh's comment on
+# why: several pods starting at once must never race to ALTER the same
+# tables concurrently).
+#
+# Jobs have an immutable spec, so re-applying this manifest for a new
+# deploy fails if a Job named "migrate" already exists from the last one.
+# The CI/CD workflow (.github/workflows/ci-cd.yml) therefore always runs
+#     kubectl delete job/migrate -n ride-hailing --ignore-not-found
+# immediately before `kubectl apply -k`, on every deploy — a fixed name
+# rather than a per-run unique one (e.g. a git-SHA suffix) because nothing
+# here needs the completed Job objects kept around for history; the pod
+# logs from the last run are all `kubectl logs job/migrate` needs, and
+# it's overwritten on the very next deploy anyway.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  namespace: ride-hailing
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  template:
+    spec:
+      serviceAccountName: ride-hailing-app
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: ghcr.io/ORG/ride-hailing-backend:latest # replaced per-environment; see overlays/*/kustomization.yaml
+          imagePullPolicy: IfNotPresent
+          command: ["python", "manage.py", "migrate", "--noinput"]
+          envFrom:
+            - configMapRef:
+                name: api-config
+            - secretRef:
+                name: api-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: tmp
+          emptyDir: {}

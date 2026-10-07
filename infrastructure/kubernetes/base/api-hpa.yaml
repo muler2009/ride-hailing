@@ -1,0 +1,50 @@
+# api autoscaling — CPU/memory-based, the standard fit for a stateless
+# request-response HTTP tier: request volume correlates reasonably well
+# with CPU here (each request does some DB/Keycloak/pricing work), and
+# unlike the worker tier below, there's no queue-depth signal available —
+# a request either gets handled now or is rejected, there's no backlog to
+# measure. Requires nothing beyond the standard metrics-server most
+# clusters already run.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api
+  namespace: ride-hailing
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api
+  minReplicas: 2 # overridden per overlay
+  maxReplicas: 10 # overridden per overlay
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 65
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 75
+  behavior:
+    # React to a traffic spike immediately...
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+    # ...but don't scale down again until load has genuinely dropped for a
+    # while — a stateless tier is cheap to over-provision briefly and
+    # expensive to thrash (each new pod pays the ~60s startupProbe window
+    # in api-deployment.yaml before it can take traffic).
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120

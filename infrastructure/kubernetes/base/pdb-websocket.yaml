@@ -1,0 +1,15 @@
+# Higher minAvailable than api's (75% vs 50%) — the same "removing a
+# websocket pod drops its live connections" reasoning as
+# websocket-hpa.yaml's scale-down policy, applied to *involuntary* (well,
+# voluntary-but-not-a-deploy: node drains, cluster upgrades) disruption
+# instead of autoscaling.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: websocket
+  namespace: ride-hailing
+spec:
+  minAvailable: 75%
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: websocket

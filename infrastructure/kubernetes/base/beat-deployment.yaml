@@ -1,0 +1,85 @@
+# beat — the Celery schedule ticker (currently just Phase 13's nightly
+# analytics rollup; see config/celery.py's beat_schedule). Deliberately
+# NOT autoscaled and NOT given a PodDisruptionBudget:
+#
+# - No HPA/ScaledObject, ever, for any metric: Celery beat is a singleton
+#   by design — it fires tasks based on wall-clock time, not incoming
+#   load, so there is no such thing as "scale beat up for more capacity".
+#   Two beat replicas running at once would each independently fire every
+#   scheduled task, double-running the nightly rollup.
+# - `replicas: 1` plus `strategy: Recreate` (rather than RollingUpdate)
+#   enforces that singleton property through a deploy too: the old pod is
+#   fully terminated before the new one starts, so there is a brief gap
+#   with zero beat pods running rather than ever two at once. A missed
+#   tick during that gap is inconsequential — compute_daily_rollup() just
+#   runs at the next scheduled tick, or can be backfilled manually
+#   (`manage.py backfill_daily_rollups`) — so this trades a harmless,
+#   rare gap for guaranteeing the harmful case (two at once) can't happen.
+# - No PodDisruptionBudget: with only one replica, a PDB requiring
+#   minAvailable: 1 would make this pod's node impossible to ever drain
+#   for maintenance — worse than the rollup occasionally running a few
+#   minutes late. A cluster that needs beat to survive node drains without
+#   any gap would need a genuinely different design (leader-election
+#   across multiple beat replicas, or an external cron hitting an
+#   authenticated trigger endpoint) — a real limitation of this setup,
+#   noted here rather than solved by a PDB that would just create a worse
+#   problem.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: beat
+  namespace: ride-hailing
+  labels:
+    app.kubernetes.io/name: beat
+    app.kubernetes.io/part-of: ride-hailing
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: beat
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: beat
+        app.kubernetes.io/part-of: ride-hailing
+    spec:
+      serviceAccountName: ride-hailing-app
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: beat
+          image: ghcr.io/ORG/ride-hailing-backend:latest # replaced per-environment; see overlays/*/kustomization.yaml
+          imagePullPolicy: IfNotPresent
+          command: ["celery"]
+          args: ["-A", "config", "beat", "--loglevel=info"]
+          envFrom:
+            - configMapRef:
+                name: api-config
+            - secretRef:
+                name: api-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+      volumes:
+        - name: tmp
+          emptyDir: {}

@@ -1,0 +1,124 @@
+# api — the WSGI/HTTP tier (gunicorn, Dockerfile's default CMD). Separate
+# Deployment from websocket (below) even though it's the same image, per
+# the architecture doc: a spike in WebSocket connections must not starve
+# HTTP request handling, which requires them to be different processes
+# with independent scaling, not just different threads in one process.
+#
+# Zero-dropped-in-flight-requests mechanism, end to end:
+#   1. `kubectl apply` (or CI) changes the image tag -> rollout begins.
+#   2. strategy.rollingUpdate (maxUnavailable=0) means no existing capacity
+#      is removed until new capacity is confirmed — see step 3.
+#   3. A new pod is only "confirmed" once its readinessProbe (GET /readyz/,
+#      which checks Postgres and Redis) succeeds — traffic only ever
+#      reaches a pod that has proven its dependencies are reachable.
+#   4. Once enough new pods are Ready, Kubernetes starts terminating old
+#      ones. Termination runs preStop (sleep 10s) BEFORE sending SIGTERM —
+#      that 10s covers the delay between a pod being marked Terminating
+#      and every kube-proxy/Ingress endpoint list actually removing it, so
+#      no *new* request is routed to a pod that's already shutting down.
+#   5. Only after that sleep does SIGTERM reach gunicorn, which stops
+#      accepting new connections but lets in-flight requests finish, up to
+#      --graceful-timeout=30s (see Dockerfile CMD) — the whole reason
+#      terminationGracePeriodSeconds below is comfortably larger than
+#      10 + 30.
+# An in-flight `accept_ride`/`complete_trip`/etc. request that's already
+# running when a pod starts terminating is exactly what step 5 protects:
+# it gets to finish and commit its transaction rather than being cut off
+# mid-request.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: ride-hailing
+  labels:
+    app.kubernetes.io/name: api
+    app.kubernetes.io/part-of: ride-hailing
+spec:
+  # Overridden by the HorizontalPodAutoscaler (api-hpa.yaml) once it's
+  # active; this is only the starting point before the HPA has taken a
+  # measurement.
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api
+        app.kubernetes.io/part-of: ride-hailing
+      annotations:
+        # Plain-annotation scrape config for a bare Prometheus (no
+        # Operator). Ignored by kube-prometheus-stack, which instead
+        # discovers this Service via the ServiceMonitor in
+        # infrastructure/monitoring/prometheus/ — both are provided
+        # because which one applies depends on how Prometheus itself was
+        # installed, not on anything this app controls.
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8000"
+    spec:
+      serviceAccountName: ride-hailing-app
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: ghcr.io/ORG/ride-hailing-backend:latest # replaced per-environment; see overlays/*/kustomization.yaml
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: api-config
+            - secretRef:
+                name: api-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          # See the Deployment-level comment above for the full sequence
+          # this preStop hook is one link in.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "10"]
+          startupProbe:
+            httpGet: { path: /healthz/, port: http }
+            periodSeconds: 2
+            failureThreshold: 30 # up to 60s to start before liveness/readiness even engage
+          readinessProbe:
+            httpGet: { path: /readyz/, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /healthz/, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+      volumes:
+        - name: tmp
+          emptyDir: {}

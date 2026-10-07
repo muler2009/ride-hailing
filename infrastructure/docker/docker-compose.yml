@@ -1,0 +1,126 @@
+# Local full-stack compose: the same four processes Kubernetes runs
+# (api, websocket, worker, beat), plus Postgres and Redis, so "does this
+# behave correctly under the real production topology" can be checked
+# without a cluster. Not used for automated tests (those run against
+# SQLite — see .github/workflows/ci-cd.yml) or for anything resembling
+# production (see infrastructure/kubernetes/ for that); this is purely a
+# local dev/demo convenience.
+#
+# Usage (from the repo root):
+#   cp backend/.env.example backend/.env   # then fill in real values
+#   docker compose -f infrastructure/docker/docker-compose.yml up --build
+#
+# Keycloak is deliberately not included here — same as the bare
+# `manage.py runserver` workflow documented in backend/README.md, it's
+# only needed for actual login, not for anything this compose file is
+# for (exercising the api/websocket/worker/beat topology together).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ride_hailing
+      POSTGRES_USER: ride_hailing
+      POSTGRES_PASSWORD: local-dev-only
+    ports: ["5432:5432"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "ride_hailing"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-off: applies migrations, then exits. `depends_on: ... completed_successfully`
+  # on the other services means `docker compose up` always runs this
+  # first — the same "migrate is a separate step, never bundled into a
+  # long-running process's own startup" rule as backend/docker-entrypoint.sh
+  # and infrastructure/kubernetes/base/migrate-job.yaml, applied here too.
+  migrate:
+    build:
+      context: ../../backend
+    env_file: ../../backend/.env
+    environment: &db_overrides
+      DATABASE_ENGINE: postgres
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      DATABASE_NAME: ride_hailing
+      DATABASE_USER: ride_hailing
+      DATABASE_PASSWORD: local-dev-only
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    command: ["python", "manage.py", "migrate", "--noinput"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: ../../backend
+    env_file: ../../backend/.env
+    environment: *db_overrides
+    ports: ["8000:8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  websocket:
+    build:
+      context: ../../backend
+    env_file: ../../backend/.env
+    environment: *db_overrides
+    command:
+      ["daphne", "-b=0.0.0.0", "-p=8001", "--access-log=-", "config.asgi:application"]
+    ports: ["8001:8001"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build:
+      context: ../../backend
+    env_file: ../../backend/.env
+    environment: *db_overrides
+    command: ["celery", "-A", "config", "worker", "--loglevel=info"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  beat:
+    build:
+      context: ../../backend
+    env_file: ../../backend/.env
+    environment: *db_overrides
+    command: ["celery", "-A", "config", "beat", "--loglevel=info"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-data:

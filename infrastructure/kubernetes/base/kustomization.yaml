@@ -1,0 +1,32 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ride-hailing
+
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - configmap.yaml
+  # secret.example.yaml deliberately NOT included — see that file's header.
+  - api-deployment.yaml
+  - api-service.yaml
+  - api-hpa.yaml
+  - pdb-api.yaml
+  - websocket-deployment.yaml
+  - websocket-service.yaml
+  - websocket-hpa.yaml
+  - pdb-websocket.yaml
+  - worker-deployment.yaml
+  - worker-hpa.yaml
+  # worker-scaledobject.example.yaml deliberately NOT included — apply it
+  # instead of worker-hpa.yaml where KEDA is available; see its own header.
+  - pdb-worker.yaml
+  - beat-deployment.yaml
+  - migrate-job.yaml
+  - ingress.yaml
+  - networkpolicy-default-deny.yaml
+  - networkpolicy-allow-api-ingress.yaml
+  - networkpolicy-allow-websocket-ingress.yaml
+
+images:
+  - name: ghcr.io/ORG/ride-hailing-backend
+    newTag: latest # overridden per overlay, and again at deploy time by CI via `kustomize edit set image`

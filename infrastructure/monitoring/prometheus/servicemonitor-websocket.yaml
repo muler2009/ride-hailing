@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: websocket
+  namespace: ride-hailing
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: websocket
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

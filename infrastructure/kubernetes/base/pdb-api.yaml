@@ -1,0 +1,15 @@
+# Bounds voluntary disruption (node drains, cluster upgrades) — a separate
+# concern from the Deployment's own rollingUpdate.maxUnavailable, which
+# only governs a deliberate rollout of this Deployment. Without this, a
+# node drain during routine cluster maintenance could take out every api
+# pod at once regardless of how carefully the rollout itself is tuned.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api
+  namespace: ride-hailing
+spec:
+  minAvailable: 50%
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api

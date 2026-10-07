@@ -1,0 +1,31 @@
+Django==6.1.1
+djangorestframework==3.18.0
+django-cors-headers==4.9.0
+python-decouple==3.8
+
+# Keycloak integration (OIDC token verification + Admin API calls)
+requests==2.34.2
+PyJWT==2.13.0
+cryptography==50.0.1
+
+# Dispatch (Phase 4) — driver-location geo store
+redis==8.1.0
+
+# Real-time tracking (Phase 5) — WebSocket support
+channels==4.3.2
+channels_redis==4.3.0
+daphne==4.2.3
+
+# Async task processing (Phase 10) — notification delivery
+celery==5.6.3
+
+# Production database driver. Not required for local dev/test, which
+# default to SQLite, but needed by every real deployment — see
+# infrastructure/kubernetes, which always sets DATABASE_ENGINE=postgres.
+psycopg[binary]==3.2.3
+
+# Production deployment (Phase 14)
+gunicorn==23.0.0             # WSGI server for the api tier (see infrastructure/docker)
+whitenoise==6.8.2            # serves collected static files from the app process, no separate nginx/CDN needed
+django-prometheus==2.5.0     # /metrics + instrumented DB backend
+

@@ -1,0 +1,26 @@
+# Requires the Prometheus Operator (kube-prometheus-stack or standalone)
+# installed in the cluster — this is a Custom Resource its controller
+# watches for, not a core Kubernetes type. For a bare Prometheus without
+# the Operator, use the `prometheus.io/scrape` etc. Pod annotations
+# already present on api-deployment.yaml/websocket-deployment.yaml
+# instead; both are provided because which one applies depends on how
+# Prometheus itself was installed; see infrastructure/monitoring/README.md.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: api
+  namespace: ride-hailing
+  labels:
+    # kube-prometheus-stack's Prometheus CR is typically configured with
+    # a serviceMonitorSelector matching this label (or matchLabels: {}
+    # to select every ServiceMonitor cluster-wide) — adjust to match
+    # whatever the target Prometheus instance actually selects on.
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

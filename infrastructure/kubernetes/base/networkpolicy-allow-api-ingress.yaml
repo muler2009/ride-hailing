@@ -1,0 +1,30 @@
+# Relies on the label Kubernetes 1.21+ automatically applies to every
+# Namespace (kubernetes.io/metadata.name: <namespace's own name>) rather
+# than a custom label the target cluster may or may not have set — the
+# portable way to say "traffic from the namespace literally named X".
+# Adjust the two namespace names below if a given cluster's ingress
+# controller or Prometheus isn't installed into a namespace of that name.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-api
+  namespace: ride-hailing
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 8000
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 8000

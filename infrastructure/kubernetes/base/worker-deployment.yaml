@@ -1,0 +1,103 @@
+# worker — Celery task execution (notification delivery, Phase 10; the
+# analytics daily-rollup task, Phase 13, actually runs on `beat`'s
+# schedule but is *executed* by a worker like any other task). No Service:
+# nothing routes traffic to a worker, it only ever initiates outbound work
+# (pulling tasks off Redis, calling providers, writing to Postgres).
+#
+# No HTTP port exists on this process, so its probes are `exec`, not
+# `httpGet`: `celery inspect ping` round-trips through the actual broker
+# and gets a response from the actual worker process, which is a stronger
+# liveness signal than "the container's PID 1 hasn't exited" — it also
+# catches a worker that's technically running but has, say, lost its
+# broker connection and never noticed.
+#
+# maxUnavailable=0 here protects in-flight tasks the same way it protects
+# in-flight requests for api: Celery's own SIGTERM handling is a *warm*
+# shutdown — a worker stops picking up new tasks but finishes whatever
+# it's currently running — so as long as terminationGracePeriodSeconds
+# comfortably exceeds this app's longest task, a task that's mid-execution
+# when a rollout starts still gets to finish rather than being killed
+# mid-way. This app's current tasks (notification delivery, one day's
+# analytics rollup) are all short; 60s is generous headroom for both today
+# and reasonable future tasks, but a task ever introduced that legitimately
+# runs longer than that should get its own Celery time_limit AND a bump
+# here — both, since neither alone fixes a mismatch between the two.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: ride-hailing
+  labels:
+    app.kubernetes.io/name: worker
+    app.kubernetes.io/part-of: ride-hailing
+spec:
+  replicas: 2 # overridden by worker-hpa.yaml (or the KEDA ScaledObject, if used instead — see worker-scaledobject.example.yaml)
+  revisionHistoryLimit: 5
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: worker
+        app.kubernetes.io/part-of: ride-hailing
+    spec:
+      serviceAccountName: ride-hailing-app
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: ghcr.io/ORG/ride-hailing-backend:latest # replaced per-environment; see overlays/*/kustomization.yaml
+          imagePullPolicy: IfNotPresent
+          command: ["celery"]
+          args: ["-A", "config", "worker", "--loglevel=info", "--concurrency=4"]
+          envFrom:
+            - configMapRef:
+                name: api-config
+            - secretRef:
+                name: api-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            exec:
+              command: ["celery", "-A", "config", "inspect", "ping", "--timeout=5"]
+            periodSeconds: 5
+            failureThreshold: 12 # up to 60s to start
+          readinessProbe:
+            exec:
+              command: ["celery", "-A", "config", "inspect", "ping", "--timeout=5"]
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 2
+          livenessProbe:
+            exec:
+              command: ["celery", "-A", "config", "inspect", "ping", "--timeout=5"]
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+      volumes:
+        - name: tmp
+          emptyDir: {}

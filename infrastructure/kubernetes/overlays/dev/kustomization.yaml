@@ -1,0 +1,192 @@
+# Dev: a throwaway kind/minikube (or a shared team dev) cluster with no
+# managed Postgres/Redis available, so this overlay — uniquely among the
+# three — brings its own (postgres-dev.yaml, redis-dev.yaml), clearly
+# marked in both files as dev-only. Recommended access is
+# `kubectl port-forward svc/api 8000:80` rather than the Ingress: a local
+# cluster usually has no ingress controller and no real TLS certificate,
+# and standing those up just to reach a dev pod is more setup than the
+# dev loop should require. The Ingress resource is still patched below to
+# something coherent in case a given dev cluster does have one.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - postgres-dev.yaml
+  - redis-dev.yaml
+
+images:
+  - name: ghcr.io/ORG/ride-hailing-backend
+    newTag: dev # built and loaded locally (`docker build` + `kind load docker-image` / `minikube image load`), not pulled from a registry
+
+patches:
+  - target:
+      kind: ConfigMap
+      name: api-config
+    patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: api-config
+      data:
+        ALLOWED_HOSTS: "*"
+        CORS_ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173
+        DATABASE_HOST: postgres
+        REDIS_URL: redis://redis:6379/0
+        CELERY_BROKER_URL: redis://redis:6379/0
+        CELERY_RESULT_BACKEND: redis://redis:6379/0
+        LOG_FORMAT: console # human-readable in a dev terminal; production/staging keep json
+        LOG_LEVEL: DEBUG
+        # No real Ingress TLS in a local cluster — see the module header.
+        SECURE_SSL_REDIRECT: "False"
+
+  - target:
+      kind: Secret
+      name: api-secrets
+    patch: |-
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: api-secrets
+      stringData:
+        SECRET_KEY: dev-only-not-a-real-secret
+        DATABASE_PASSWORD: dev-only-not-a-real-secret
+
+  - target:
+      kind: Ingress
+      name: ride-hailing
+    patch: |-
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: ride-hailing
+        annotations:
+          cert-manager.io/cluster-issuer: null
+      spec:
+        tls: null
+        rules:
+          - host: ride-hailing.local
+
+  # One of everything, minimally sized — a dev cluster needs to prove the
+  # whole topology works, not carry any real load.
+  - target:
+      kind: Deployment
+      name: api
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: api
+      spec:
+        replicas: 1
+        template:
+          spec:
+            containers:
+              - name: api
+                resources:
+                  requests: { cpu: 50m, memory: 128Mi }
+                  limits: { cpu: 250m, memory: 256Mi }
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: api
+    patch: |-
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: api
+      spec:
+        minReplicas: 1
+        maxReplicas: 2
+
+  - target:
+      kind: Deployment
+      name: websocket
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: websocket
+      spec:
+        replicas: 1
+        template:
+          spec:
+            containers:
+              - name: websocket
+                resources:
+                  requests: { cpu: 50m, memory: 128Mi }
+                  limits: { cpu: 250m, memory: 256Mi }
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: websocket
+    patch: |-
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: websocket
+      spec:
+        minReplicas: 1
+        maxReplicas: 2
+
+  - target:
+      kind: Deployment
+      name: worker
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: worker
+      spec:
+        replicas: 1
+        template:
+          spec:
+            containers:
+              - name: worker
+                args: ["-A", "config", "worker", "--loglevel=info", "--concurrency=1"]
+                resources:
+                  requests: { cpu: 50m, memory: 128Mi }
+                  limits: { cpu: 250m, memory: 256Mi }
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: worker
+    patch: |-
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: worker
+      spec:
+        minReplicas: 1
+        maxReplicas: 2
+
+  # PodDisruptionBudgets requiring majority-availability make no sense at
+  # replicas: 1 (minAvailable: 50% of 1 rounds up to 1, which would block
+  # a single-node dev cluster from ever being drained at all).
+  - target:
+      kind: PodDisruptionBudget
+      name: api
+    patch: |-
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: api
+      spec:
+        minAvailable: 0
+  - target:
+      kind: PodDisruptionBudget
+      name: websocket
+    patch: |-
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: websocket
+      spec:
+        minAvailable: 0
+  - target:
+      kind: PodDisruptionBudget
+      name: worker
+    patch: |-
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: worker
+      spec:
+        minAvailable: 0

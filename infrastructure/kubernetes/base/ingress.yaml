@@ -1,0 +1,49 @@
+# Single hostname, path-routed: /ws/... (apps/locations/routing.py's
+# actual WebSocket URL prefix) goes to the websocket Service; everything
+# else goes to api. TLS terminates here — Django itself never sees plain
+# HTTP vs HTTPS directly, which is exactly why config/settings.py trusts
+# X-Forwarded-Proto (SECURE_PROXY_SSL_HEADER) instead of its own transport.
+#
+# Annotations below are nginx-ingress-specific (the most common controller
+# to default to); swap them for the equivalent on whatever controller a
+# given cluster actually runs (Traefik, AWS ALB, GKE, ...) — the
+# `ingressClassName` and per-path routing underneath are the portable part.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ride-hailing
+  namespace: ride-hailing
+  annotations:
+    # WebSocket connections are long-lived; nginx-ingress's default
+    # proxy-read/send-timeout (60s) would silently kill an idle-but-still-
+    # open ride-tracking connection well before the ride is over.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # cert-manager (if installed) issues/renews the TLS Secret referenced
+    # below automatically from this annotation. Harmless no-op if
+    # cert-manager isn't installed — the Secret then just needs providing
+    # some other way (manually, or an equivalent from the cloud provider).
+    cert-manager.io/cluster-issuer: "letsencrypt-production"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["CHANGEME.invalid"] # overridden per overlay to the real domain
+      secretName: ride-hailing-tls
+  rules:
+    - host: CHANGEME.invalid
+      http:
+        paths:
+          - path: /ws
+            pathType: Prefix
+            backend:
+              service:
+                name: websocket
+                port:
+                  number: 80
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 80

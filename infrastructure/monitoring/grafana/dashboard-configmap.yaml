@@ -1,0 +1,143 @@
+# Generated from dashboard-platform-overview.json — edit that file (real
+# Grafana dashboard JSON, easy to preview/import directly too) and re-paste
+# it into the block below, rather than hand-editing the embedded copy.
+# Requires kube-prometheus-stack's Grafana sidecar (enabled by default in
+# that chart) watching ConfigMaps labeled grafana_dashboard: "1" across
+# the cluster. Without it, import dashboard-platform-overview.json
+# directly in the Grafana UI instead (Dashboards -> New -> Import).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-platform-overview
+  namespace: ride-hailing
+  labels:
+    grafana_dashboard: "1"
+data:
+  platform-overview.json: |
+    {
+      "title": "Ride-Hailing Platform — Overview",
+      "uid": "ride-hailing-overview",
+      "tags": ["ride-hailing"],
+      "timezone": "utc",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": { "from": "now-6h", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Request rate by tier",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "targets": [
+            {
+              "expr": "sum by (job) (rate(django_http_requests_total_by_method_total{job=~\"api|websocket\"}[5m]))",
+              "legendFormat": "{{job}}"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "5xx error rate by tier",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "fieldConfig": { "defaults": { "unit": "percentunit" }, "overrides": [] },
+          "targets": [
+            {
+              "expr": "sum by (job) (rate(django_http_responses_total_by_status_total{status=~\"5..\",job=~\"api|websocket\"}[5m])) / sum by (job) (rate(django_http_responses_total_by_status_total{job=~\"api|websocket\"}[5m]))",
+              "legendFormat": "{{job}}"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "p50 / p95 / p99 request latency — api",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum by (le) (rate(django_http_requests_latency_seconds_by_view_method_bucket{job=\"api\"}[5m])))",
+              "legendFormat": "p50"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(django_http_requests_latency_seconds_by_view_method_bucket{job=\"api\"}[5m])))",
+              "legendFormat": "p95"
+            },
+            {
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(django_http_requests_latency_seconds_by_view_method_bucket{job=\"api\"}[5m])))",
+              "legendFormat": "p99"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Database query duration (p95) by tier",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum by (le, job) (rate(django_db_query_duration_seconds_bucket{job=~\"api|websocket|worker\"}[5m])))",
+              "legendFormat": "{{job}}"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "title": "Replica count vs. HPA max — api",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+          "targets": [
+            {
+              "expr": "kube_horizontalpodautoscaler_status_current_replicas{namespace=\"ride-hailing\",horizontalpodautoscaler=\"api\"}",
+              "legendFormat": "current"
+            },
+            {
+              "expr": "kube_horizontalpodautoscaler_spec_max_replicas{namespace=\"ride-hailing\",horizontalpodautoscaler=\"api\"}",
+              "legendFormat": "max"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "title": "Replica count vs. HPA max — websocket",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+          "targets": [
+            {
+              "expr": "kube_horizontalpodautoscaler_status_current_replicas{namespace=\"ride-hailing\",horizontalpodautoscaler=\"websocket\"}",
+              "legendFormat": "current"
+            },
+            {
+              "expr": "kube_horizontalpodautoscaler_spec_max_replicas{namespace=\"ride-hailing\",horizontalpodautoscaler=\"websocket\"}",
+              "legendFormat": "max"
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "title": "Pod restarts (15m)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+          "targets": [
+            {
+              "expr": "increase(kube_pod_container_status_restarts_total{namespace=\"ride-hailing\"}[15m])",
+              "legendFormat": "{{pod}}/{{container}}"
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "title": "Pods Ready by tier",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+          "targets": [
+            {
+              "expr": "sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"ride-hailing\"})",
+              "legendFormat": "{{deployment}}"
+            }
+          ]
+        }
+      ]
+    }

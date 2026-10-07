@@ -1,0 +1,25 @@
+# Baseline: no pod in this namespace accepts inbound traffic from
+# anywhere unless a more specific NetworkPolicy says otherwise —
+# NetworkPolicies selecting the same pod are additive (unioned), not
+# overriding, so networkpolicy-allow-*.yaml add exceptions to this rather
+# than replacing it. Egress is deliberately left unrestricted (this policy
+# only sets policyTypes: [Ingress]) — this app calls a wide, legitimately
+# arbitrary set of external hosts (Keycloak, Stripe, Chapa, Twilio, FCM,
+# Nominatim, OSRM, plus managed Postgres/Redis), and a plain
+# NetworkPolicy egress allowlist can only match IP blocks, not hostnames —
+# writing one here would mean hard-coding IPs for third-party services
+# that can and do change without notice, creating an outage risk for
+# security value that's mostly illusory (a compromised pod can already
+# exfiltrate over plain HTTPS to any allowed destination). A cluster
+# wanting real egress control needs an FQDN-aware mechanism (e.g. Cilium's
+# DNS-based policies) rather than core NetworkPolicy — noted here as a
+# real gap, not silently worked around.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: ride-hailing
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress

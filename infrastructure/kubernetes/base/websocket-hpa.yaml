@@ -1,0 +1,57 @@
+# websocket autoscaling — deliberately NOT a copy of api-hpa.yaml with the
+# name changed. A connection-holding tier behaves differently from a
+# request-response one, and the policy below reflects that in three ways:
+#
+# 1. Lower CPU target (50% vs api's 65%): an idle-but-open WebSocket
+#    connection costs memory and a file descriptor, barely any CPU, so
+#    CPU utilization is a weaker proxy for "this pod is under load" here
+#    than it is for api. Triggering scale-up earlier gives more headroom
+#    against a connection-count surge that CPU alone wouldn't yet show.
+# 2. Same fast scale-up as api (react to a spike immediately).
+# 3. MUCH slower scale-down (900s vs api's 300s, and one pod at a time):
+#    removing an api pod costs nothing but a few milliseconds of
+#    in-flight requests (see api-deployment.yaml's drain sequence).
+#    Removing a websocket pod drops every connection it's currently
+#    holding (see websocket-deployment.yaml's comment on why that can't be
+#    avoided). Scaling down slowly and by one pod at a time is the only
+#    lever available to keep that an infrequent event rather than a
+#    routine one.
+#
+# For a still-better signal than CPU — actual active-connection count —
+# see websocket-scaledobject.example.yaml, which scales on a Prometheus
+# metric via KEDA instead. Not shipped as the default because it requires
+# KEDA (or the Prometheus Adapter) installed in the cluster first; this
+# CPU-based HPA works with only the standard metrics-server every cluster
+# already runs, so it's what's actually wired up by default.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: websocket
+  namespace: ride-hailing
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: websocket
+  minReplicas: 2 # overridden per overlay
+  maxReplicas: 8 # overridden per overlay
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 900
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 300

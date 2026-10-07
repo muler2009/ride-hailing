@@ -1,0 +1,73 @@
+# Non-secret configuration, shared by every process (api, websocket,
+# worker, beat) via envFrom. Values here are safe to see in `kubectl
+# describe` or a Git diff; anything that isn't — passwords, API keys,
+# tokens, the Django SECRET_KEY — lives in secret.example.yaml instead,
+# never here. Per-environment overlays patch individual keys (ALLOWED_HOSTS,
+# CORS_ALLOWED_ORIGINS, log verbosity, ...) rather than forking this file.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+  namespace: ride-hailing
+data:
+  DEBUG: "False"
+  DJANGO_SETTINGS_MODULE: "config.settings"
+
+  # Overridden per overlay to the real domain(s) — base intentionally ships
+  # an obviously-wrong placeholder rather than a real-looking one, so an
+  # overlay that forgets to patch it fails loudly (ALLOWED_HOSTS
+  # mismatch -> 400) instead of silently accepting traffic for the wrong host.
+  ALLOWED_HOSTS: "CHANGEME.invalid"
+  CORS_ALLOWED_ORIGINS: "https://CHANGEME.invalid"
+
+  DATABASE_ENGINE: "postgres"
+  # Managed Postgres (RDS/Cloud SQL/etc.), not a StatefulSet in this
+  # cluster — see infrastructure/kubernetes/README.md for why. Only the
+  # password is secret; host/port/name/user are not.
+  DATABASE_HOST: "CHANGEME.invalid"
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: "ride_hailing"
+  DATABASE_USER: "ride_hailing"
+  DATABASE_CONN_MAX_AGE: "60"
+
+  # Managed Redis (ElastiCache/Memorystore/etc.), likewise not
+  # self-hosted here. No credentials embedded for this app's usage — if a
+  # real deployment's Redis requires an AUTH token in the URL, move
+  # REDIS_URL/CACHE_URL to the Secret instead of leaving them here.
+  REDIS_URL: "redis://CHANGEME.invalid:6379/0"
+  CACHE_BACKEND: "redis"
+  CELERY_BROKER_URL: "redis://CHANGEME.invalid:6379/0"
+  CELERY_RESULT_BACKEND: "redis://CHANGEME.invalid:6379/0"
+
+  MAP_PROVIDER: "osrm_nominatim"
+  NOMINATIM_BASE_URL: "https://nominatim.openstreetmap.org"
+  NOMINATIM_USER_AGENT: "ride-hailing-platform (set a real contact address)"
+  OSRM_BASE_URL: "https://router.project-osrm.org"
+
+  CHAPA_CALLBACK_URL: "https://CHANGEME.invalid/api/v1/payments/webhooks/chapa/"
+
+  PLATFORM_COMMISSION_RATE: "0.20"
+  MINIMUM_PAYOUT_AMOUNT: "10.00"
+
+  KEYCLOAK_SERVER_URL: "https://CHANGEME.invalid"
+  KEYCLOAK_REALM: "ride-hailing"
+  KEYCLOAK_CLIENT_ID: "ride-hailing-backend"
+  KEYCLOAK_ADMIN_CLIENT_ID: "admin-cli"
+  KEYCLOAK_ADMIN_USERNAME: "admin"
+
+  EMAIL_BACKEND: "django.core.mail.backends.smtp.EmailBackend"
+  DEFAULT_FROM_EMAIL: "no-reply@CHANGEME.invalid"
+  SMS_PROVIDER: "twilio"
+  TWILIO_FROM_NUMBER: "CHANGEME"
+  PUSH_PROVIDER: "fcm"
+  FCM_PROJECT_ID: "CHANGEME"
+
+  # Structured JSON logs for the cluster's log aggregator (see
+  # config/settings.py's Logging section). "console" is only for local dev.
+  LOG_FORMAT: "json"
+  LOG_LEVEL: "INFO"
+
+  SECURE_SSL_REDIRECT: "True"
+  SECURE_HSTS_SECONDS: "86400"
+  SECURE_HSTS_INCLUDE_SUBDOMAINS: "False"
+  SECURE_HSTS_PRELOAD: "False"

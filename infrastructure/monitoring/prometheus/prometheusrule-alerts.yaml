@@ -1,0 +1,76 @@
+# Deliberately limited to metrics actually wired up elsewhere in this
+# phase (django-prometheus's HTTP/DB metrics, plus kube-state-metrics,
+# which any kube-prometheus-stack install already includes). NOT included:
+# an alert on the platform's own business metrics (dispatch acceptance
+# rate, no-driver-found rate — see apps/analytics) or on Celery queue
+# depth (see worker-scaledobject.example.yaml's note on a celery-exporter)
+# — both are real, legitimate things to alert on, but neither is exposed
+# as a Prometheus metric anywhere in this codebase yet. Alerting on a
+# metric that doesn't exist would be worse than not alerting at all;
+# both are documented follow-ups in infrastructure/monitoring/README.md
+# rather than faked here.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ride-hailing-alerts
+  namespace: ride-hailing
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: ride-hailing.availability
+      rules:
+        - alert: ScrapeTargetDown
+          expr: up{job=~"api|websocket"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Prometheus can't scrape {{ $labels.job }} ({{ $labels.instance }})"
+            description: >
+              Either the pod is down, or the NetworkPolicy allowing the
+              monitoring namespace to reach it
+              (infrastructure/kubernetes/base/networkpolicy-allow-*-ingress.yaml)
+              no longer matches this Prometheus's actual namespace.
+
+        - alert: HighHTTP5xxRate
+          expr: |
+            sum by (job) (rate(django_http_responses_total_by_status_total{status=~"5..", job=~"api|websocket"}[5m]))
+            /
+            sum by (job) (rate(django_http_responses_total_by_status_total{job=~"api|websocket"}[5m]))
+            > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.job }} 5xx rate above 5% for 5 minutes"
+
+        - alert: HighRequestLatencyP95
+          expr: |
+            histogram_quantile(0.95, sum by (le, job) (rate(django_http_requests_latency_seconds_by_view_method_bucket{job=~"api|websocket"}[5m]))) > 2
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.job }} p95 request latency above 2s for 10 minutes"
+
+    - name: ride-hailing.capacity
+      rules:
+        - alert: HPAAtMaxReplicas
+          expr: |
+            kube_horizontalpodautoscaler_status_current_replicas{namespace="ride-hailing"}
+            >=
+            kube_horizontalpodautoscaler_spec_max_replicas{namespace="ride-hailing"}
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.horizontalpodautoscaler }} has been pinned at its max replica count for 15 minutes"
+            description: "Sustained maxReplicas usually means the ceiling itself needs raising, not just more time to catch up — see the overlay's HPA patch."
+
+        - alert: PodCrashLooping
+          expr: increase(kube_pod_container_status_restarts_total{namespace="ride-hailing"}[15m]) > 3
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.pod }}/{{ $labels.container }} has restarted more than 3 times in 15 minutes"

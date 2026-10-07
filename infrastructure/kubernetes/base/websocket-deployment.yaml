@@ -1,0 +1,128 @@
+# websocket — the ASGI tier (daphne), serving Django Channels connections
+# for real-time location/ride-status updates (architecture doc, Section F).
+# Same image as api, different command — kept as its own Deployment so a
+# spike in WebSocket connections scales and is capacity-planned
+# independently of HTTP request volume, per the architecture doc's own
+# reasoning for splitting these two servers in the first place.
+#
+# An honest limitation, not papered over: unlike an HTTP request (which
+# finishes in milliseconds and drains cleanly within api-deployment.yaml's
+# preStop+graceful-timeout window), an open WebSocket connection is
+# long-lived. When a websocket pod terminates, its currently-connected
+# clients' sockets close, however generous the grace period — there is no
+# way to hand off an established TCP connection to a different pod.
+# terminationGracePeriodSeconds is still set high (see below) because it's
+# the only lever available to reduce *how often* this happens (fewer,
+# less-frequent rollouts of this Deployment; see the HPA's much more
+# conservative scale-down policy for the same reason) — but it cannot make
+# it zero. The client is expected to detect the drop and reconnect with
+# backoff; when it does, it resumes seeing correct state because that
+# state lives in Postgres (Ride, RideLocation, ...), not in the socket
+# itself. This is *why* this phase's "zero dropped in-flight rides"
+# criterion is about the ride surviving the deploy, not the socket: a
+# ride is a row in Postgres that a rolling deploy never touches; a
+# WebSocket is a connection that unavoidably can be interrupted by one.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: websocket
+  namespace: ride-hailing
+  labels:
+    app.kubernetes.io/name: websocket
+    app.kubernetes.io/part-of: ride-hailing
+spec:
+  replicas: 2 # overridden by websocket-hpa.yaml once active
+  revisionHistoryLimit: 5
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: websocket
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: websocket
+        app.kubernetes.io/part-of: ride-hailing
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8001"
+    spec:
+      serviceAccountName: ride-hailing-app
+      # Longer than api's: existing connections get a longer window to
+      # either finish naturally or be told to reconnect before the hard
+      # SIGKILL, rather than being cut off the moment the drain starts.
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: websocket
+          image: ghcr.io/ORG/ride-hailing-backend:latest # replaced per-environment; see overlays/*/kustomization.yaml
+          imagePullPolicy: IfNotPresent
+          command: ["daphne"]
+          args:
+            - "-b=0.0.0.0"
+            - "-p=8001"
+            - "--access-log=-"
+            - "config.asgi:application"
+          ports:
+            - name: http
+              containerPort: 8001
+          envFrom:
+            - configMapRef:
+                name: api-config
+            - secretRef:
+                name: api-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          lifecycle:
+            preStop:
+              exec:
+                # Longer than api's 10s for the same reason
+                # terminationGracePeriodSeconds is longer: give the
+                # Ingress/Service endpoint removal more margin before
+                # existing long-lived connections start being cut, since
+                # unlike a stateless HTTP request there's no way to finish
+                # them faster by waiting less.
+                command: ["sleep", "15"]
+          # Same liveness/readiness endpoints as api (apps/common/health.py
+          # is plain Django, servable from either the WSGI or ASGI process);
+          # only the port differs.
+          startupProbe:
+            httpGet: { path: /healthz/, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /readyz/, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /healthz/, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 750m
+              memory: 512Mi
+      volumes:
+        - name: tmp
+          emptyDir: {}

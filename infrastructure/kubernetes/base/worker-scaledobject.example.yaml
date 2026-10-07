@@ -1,0 +1,35 @@
+# EXAMPLE — not applied by default (see kustomization.yaml: this file is
+# deliberately not listed in `resources`). Requires the KEDA operator
+# (https://keda.sh) installed in the cluster first.
+#
+# Scales the worker Deployment on the actual length of Celery's Redis
+# queue instead of CPU — the metric that actually describes "is there
+# unstarted work waiting", which is what worker-hpa.yaml's comment
+# explains CPU can't reliably tell you. `celery` here is Celery's default
+# queue name (this app never overrides `task_default_queue`, so every
+# task — notification delivery, the analytics rollup — lands on it).
+#
+# To use this instead of worker-hpa.yaml:
+#   kubectl delete hpa worker -n ride-hailing
+#   kubectl apply -f worker-scaledobject.example.yaml
+# (KEDA's ScaledObject creates and manages its own HPA under the hood —
+# hence deleting the hand-written one first, so there's only ever one
+# controller adjusting this Deployment's replica count.)
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker
+  namespace: ride-hailing
+spec:
+  scaleTargetRef:
+    name: worker
+  minReplicaCount: 2
+  maxReplicaCount: 8
+  cooldownPeriod: 300
+  triggers:
+    - type: redis
+      metadata:
+        address: CHANGEME.invalid:6379 # same host:port as REDIS_URL in configmap.yaml
+        listName: celery
+        listLength: "20" # target: ~20 queued tasks per worker replica
+        activationListLength: "1"

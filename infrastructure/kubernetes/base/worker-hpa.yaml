@@ -1,0 +1,45 @@
+# Fallback/default autoscaling for the worker tier: CPU-based, works with
+# nothing beyond the standard metrics-server every cluster already runs.
+#
+# This is a genuinely weaker fit than for api: a worker can be sitting
+# CPU-idle while a growing backlog of unstarted tasks waits in Redis (CPU
+# never rises, so this HPA never scales up), or be legitimately busy
+# running one long task while completely healthy (CPU rises, HPA scales
+# up work that adding pods can't actually speed up). Shipped as the
+# default anyway because it requires no extra cluster components — see
+# worker-scaledobject.example.yaml for the queue-depth-based alternative
+# that doesn't have either problem, recommended wherever KEDA is
+# available. Apply exactly one of these two for the worker Deployment, not
+# both — they'd fight each other over the same replica count.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker
+  namespace: ride-hailing
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker
+  minReplicas: 2 # overridden per overlay
+  maxReplicas: 8 # overridden per overlay
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
